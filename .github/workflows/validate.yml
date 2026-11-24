@@ -220,7 +220,7 @@ jobs:
             sleep 10
           done
           
-          echo "❌ UI health check failed after 30 attempts"
+          echo "❌ UI health  check failed after 30 attempts"
           exit 1
 
       - name: 📊 Deployment  Summary
