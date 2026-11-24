@@ -35,8 +35,12 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: 🐳 Login to ACR
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
-          docker login -u ${{ secrets.ACR_USERNAME }} -p ${{ secrets.ACR_PASSWORD }} ${{ env.ACR_NAME }}.azurecr.io
+          printf '%s' "$ACR_PASSWORD" | docker login "$ACR_NAME.azurecr.io" \
+            --username "$ACR_USERNAME" --password-stdin
 
       - name: 🏗️ Build Backend  API image
         run: |
