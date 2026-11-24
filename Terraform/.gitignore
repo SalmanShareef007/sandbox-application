@@ -18,3 +18,11 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+
+# Terraform downloaded providers
+**/.terraform/
+
+
+# Terraform AzureRM provider executable
+Terraform/environments/dev/.terraform/providers/registry.terraform.io/hashicorp/azurerm/4.81.0/windows_386/terraform-provider-azurerm_v4.81.0_x5.exe

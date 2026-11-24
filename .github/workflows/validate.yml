@@ -223,7 +223,7 @@ jobs:
           echo "❌ UI health check failed after 30 attempts"
           exit 1
 
-      - name: 📊 Deployment Summary
+      - name: 📊 Deployment  Summary
         run: |
           echo "======================================"
           echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY!"
