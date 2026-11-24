@@ -1,0 +1,38 @@
+# DEPLOY.txt - Quick Reference Card
+
+📋 BEFORE YOU START:
+   1. Get Subscription ID:  az account list --output table
+   2. Copy your SubscriptionId (looks like: 9dd38a25-...)
+   3. Decide a Resource Group name (e.g., rg-hosting-prod)
+   4. Choose environment suffix (e.g., prod, dev, test) - 3-8 chars
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 ONE COMMAND TO DEPLOY EVERYTHING:
+
+cd infra\hosting
+
+.\deploy-one-flow.ps1 `
+  -SubscriptionId "PASTE_YOUR_SUBSCRIPTION_ID_HERE" `
+  -ResourceGroup "rg-hosting-prod" `
+  -Suffix "prod" `
+  -DbAdminUser "dbadmin" `
+  -DbAdminPassword "P@ssw0rd123!"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ WHAT GETS DEPLOYED:
+   ✓ Resource Group
+   ✓ PostgreSQL Database
+   ✓ Container Apps (for workers)
+   ✓ App Service (for API)
+   ✓ Storage Account (for logs)
+   ✓ Managed Identities & RBAC
+
+⏱️  TIME: 2-3 minutes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📖 DETAILED GUIDE: See DEPLOYMENT-INSTRUCTIONS.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.49.2.45890",
+      "templateHash": "5453247435438209161"
+    }
+  },
+  "parameters": {
+    "apiIdentityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "API managed identity principal ID for RBAC role assignments"
+      }
+    },
+    "workerIdentityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Worker managed identity principal ID for RBAC role assignments"
+      }
+    }
+  },
+  "variables": {
+    "acrPullRoleId": "7f951dda-4355-481f-80cc-630798466c7d",
+    "postgresFlexibleServerDatabaseUserRoleId": "1e6dd4dc-fab2-408e-9b9d-9b5177172919"
+  },
+  "resources": [],
+  "outputs": {
+    "acrPullRoleId": {
+      "type": "string",
+      "value": "[variables('acrPullRoleId')]"
+    },
+    "postgresUserRoleId": {
+      "type": "string",
+      "value": "[variables('postgresFlexibleServerDatabaseUserRoleId')]"
+    },
+    "apiIdentityPrincipalId": {
+      "type": "string",
+      "value": "[parameters('apiIdentityPrincipalId')]"
+    },
+    "workerIdentityPrincipalId": {
+      "type": "string",
+      "value": "[parameters('workerIdentityPrincipalId')]"
+    }
+  }
+}

@@ -1,0 +1,208 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.49.2.45890",
+      "templateHash": "9673548310479468274"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region for resource deployment"
+      }
+    },
+    "serverName": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL Flexible Server name"
+      }
+    },
+    "databaseName": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL database name"
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL administrator username"
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "PostgreSQL administrator password"
+      }
+    },
+    "skuName": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms",
+      "metadata": {
+        "description": "PostgreSQL SKU name (e.g., Standard_B1ms, Standard_D2s_v3)"
+      }
+    },
+    "storageSizeGB": {
+      "type": "int",
+      "defaultValue": 32,
+      "minValue": 32,
+      "maxValue": 16384,
+      "metadata": {
+        "description": "Storage size in GB (must be between 32-16384)"
+      }
+    },
+    "postgresVersion": {
+      "type": "string",
+      "defaultValue": "15",
+      "allowedValues": [
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16"
+      ],
+      "metadata": {
+        "description": "PostgreSQL version"
+      }
+    },
+    "enablePublicAccess": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable public IP access with firewall rules (restricted to specific IPs)"
+      }
+    },
+    "allowedPublicIPs": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Allowed public IPs (only used if enablePublicAccess=true)"
+      }
+    },
+    "backupRetentionDays": {
+      "type": "int",
+      "defaultValue": 7,
+      "minValue": 7,
+      "maxValue": 35,
+      "metadata": {
+        "description": "Backup retention days"
+      }
+    },
+    "geoRedundantBackup": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable geo-redundant backups"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Resource tags"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[parameters('serverName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "[parameters('skuName')]",
+        "tier": "[if(contains(parameters('skuName'), 'Standard_B'), 'Burstable', 'GeneralPurpose')]"
+      },
+      "properties": {
+        "administratorLogin": "[parameters('adminUsername')]",
+        "administratorLoginPassword": "[parameters('adminPassword')]",
+        "version": "[parameters('postgresVersion')]",
+        "storage": {
+          "storageSizeGB": "[parameters('storageSizeGB')]"
+        },
+        "backup": {
+          "backupRetentionDays": "[parameters('backupRetentionDays')]",
+          "geoRedundantBackup": "[if(parameters('geoRedundantBackup'), 'Enabled', 'Disabled')]"
+        },
+        "network": {
+          "delegatedSubnetResourceId": null,
+          "privateDnsZoneArmResourceId": null
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[format('{0}/{1}', parameters('serverName'), parameters('databaseName'))]",
+      "properties": {
+        "charset": "UTF8",
+        "collation": "en_US.utf8"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "firewallRules",
+        "count": "[length(parameters('allowedPublicIPs'))]",
+        "mode": "serial",
+        "batchSize": 1
+      },
+      "condition": "[parameters('enablePublicAccess')]",
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/firewallRules",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[format('{0}/{1}', parameters('serverName'), format('allow-ip-{0}', copyIndex()))]",
+      "properties": {
+        "startIpAddress": "[parameters('allowedPublicIPs')[copyIndex()]]",
+        "endIpAddress": "[parameters('allowedPublicIPs')[copyIndex()]]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/configurations",
+      "apiVersion": "2023-12-01-preview",
+      "name": "[format('{0}/{1}', parameters('serverName'), 'max_connections')]",
+      "properties": {
+        "value": "100",
+        "source": "user-override"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "serverId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+    },
+    "serverName": {
+      "type": "string",
+      "value": "[parameters('serverName')]"
+    },
+    "serverFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName')), '2023-12-01-preview').fullyQualifiedDomainName]"
+    },
+    "databaseName": {
+      "type": "string",
+      "value": "[parameters('databaseName')]"
+    },
+    "administratorLogin": {
+      "type": "string",
+      "value": "[parameters('adminUsername')]"
+    }
+  }
+}

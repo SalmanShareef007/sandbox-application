@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "suffix": {
+      "value": "sbx-prod"
+    },
+    "imageTag": {
+      "value": "latest"
+    },
+    "dbAdminUser": {
+      "value": "sandboxadmin"
+    },
+    "dbAdminPassword": {
+      "value": "08fpIz3EHYoW6b7Q"
+    },
+    "sourceAcrUrl": {
+      "value": "acrsbxdev7e76e808.azurecr.io"
+    },
+    "acrTokenUsername": {
+      "value": "sandbox-pull-token"
+    },
+    "acrTokenPassword": {
+      "value": "REPLACE_WITH_ACR_TOKEN_PASSWORD"
+    },
+    "minReplicas": {
+      "value": 1
+    },
+    "maxReplicas": {
+      "value": 2
+    }
+  }
+}
