@@ -104,10 +104,24 @@ jobs:
     needs: build
     permissions:
       contents: read
+    env:
+      API_APP_SERVICE_NAME: ${{ secrets.API_APP_SERVICE_NAME }}
+      UI_APP_SERVICE_NAME: ${{ secrets.UI_APP_SERVICE_NAME }}
+      WORKER_CONTAINER_APP_NAME: ${{ secrets.WORKER_CONTAINER_APP_NAME }}
 
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
+
+      - name: Validate deployment names
+        run: |
+          for setting in API_APP_SERVICE_NAME UI_APP_SERVICE_NAME WORKER_CONTAINER_APP_NAME ACR_RESOURCE_GROUP; do
+            value="${!setting}"
+            if [[ -z "$value" || "$value" =~ [[:space:]] ]]; then
+              echo "::error::$setting must be nonempty and contain no spaces or line breaks."
+              exit 1
+            fi
+          done
 
       - name: 🔐 Azure Login (Service Principal)
         uses: azure/login@v1
@@ -116,11 +130,11 @@ jobs:
 
       - name: 🌐 Deploy API to App Service
         run: |
-          echo "🚀 Deploying API image to: ${{ secrets.API_APP_SERVICE_NAME }}"
+          echo "🚀 Deploying API image to: $API_APP_SERVICE_NAME"
           
           az webapp config container set \
-            --name ${{ secrets.API_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --name "$API_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" \
             --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest \
             --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io \
             --docker-registry-server-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
@@ -130,11 +144,11 @@ jobs:
 
       - name: 🌐 Deploy UI to App Service
         run: |
-          echo "🚀 Deploying UI image to: ${{ secrets.UI_APP_SERVICE_NAME }}"
+          echo "🚀 Deploying UI image to: $UI_APP_SERVICE_NAME"
           
           az webapp config container set \
-            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --name "$UI_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" \
             --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest \
             --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io \
             --docker-registry-server-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
@@ -147,8 +161,8 @@ jobs:
           echo "🚀 Deploying Worker image to Container Apps"
           
           az containerapp update \
-            --name ${{ secrets.WORKER_CONTAINER_APP_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --name "$WORKER_CONTAINER_APP_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" \
             --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest
           
           echo "✅ Worker deployment updated in Container Apps"
@@ -158,12 +172,12 @@ jobs:
           echo "🔄 Restarting App Services..."
           
           az webapp restart \
-            --name ${{ secrets.API_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }}
+            --name "$API_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP"
           
           az webapp restart \
-            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }}
+            --name "$UI_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP"
           
           echo "✅ App Services restarted"
 
@@ -172,8 +186,8 @@ jobs:
           echo "🔄 Restarting Worker Container App..."
           
           az containerapp revision activate \
-            --name ${{ secrets.WORKER_CONTAINER_APP_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} || true
+            --name "$WORKER_CONTAINER_APP_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" || true
           
           echo "✅ Container App restarted"
 
@@ -186,8 +200,8 @@ jobs:
       - name: 🏥 Health Check - API
         run: |
           API_FQDN=$(az webapp show \
-            --name ${{ secrets.API_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --name "$API_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" \
             --query defaultHostName -o tsv)
           
           API_URL="https://${API_FQDN}/api/v1/health"
@@ -208,8 +222,8 @@ jobs:
       - name: 🏥 Health Check - UI
         run: |
           UI_FQDN=$(az webapp show \
-            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
-            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --name "$UI_APP_SERVICE_NAME" \
+            --resource-group "$ACR_RESOURCE_GROUP" \
             --query defaultHostName -o tsv)
           
           UI_URL="https://${UI_FQDN}"
@@ -239,11 +253,11 @@ jobs:
           echo "   - UI:     ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest"
           echo ""
           echo "🌐 Deployed to App Services:"
-          echo "   - API App Service: ${{ secrets.API_APP_SERVICE_NAME }}"
-          echo "   - UI App Service:  ${{ secrets.UI_APP_SERVICE_NAME }}"
+          echo "   - API App Service: $API_APP_SERVICE_NAME"
+          echo "   - UI App Service:  $UI_APP_SERVICE_NAME"
           echo ""
           echo "🐳 Deployed to Container Apps:"
-          echo "   - Worker: ${{ secrets.WORKER_CONTAINER_APP_NAME }}"
+          echo "   - Worker: $WORKER_CONTAINER_APP_NAME"
           echo ""
           echo "✅ Health checks passed!"
           echo "======================================"
