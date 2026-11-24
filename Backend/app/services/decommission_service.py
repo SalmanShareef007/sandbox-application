@@ -1,0 +1,109 @@
+
+import logging
+
+import httpx
+from azure.mgmt.resource.resources import ResourceManagementClient
+
+from app.core.config import settings
+from app.integrations.terraform import TerraformExecutionError, azure_credential
+from app.repositories.extension_repository import DecommissionRequestRepository
+from app.repositories.request_repository import SandboxRequestRepository
+from app.repositories.sandbox_repository import SandboxRepository
+from app.services.audit_service import AuditService
+from app.services.sandbox_service import (
+    _record_failure,
+    history_entry,
+    resource_group_name,
+    update_request,
+)
+from app.services.terraform_service import TerraformService, write_job_log
+from app.services.subscription_service import subscription_id
+
+logger = logging.getLogger(__name__)
+
+BUDGET_API_VERSION = "2023-05-01"
+
+
+def _delete_budget(group: str, sandbox_id: str, log: list[str], credential) -> None:
+    url = (
+        f"https://management.azure.com/subscriptions/{subscription_id()}"
+        f"/resourceGroups/{group}/providers/Microsoft.Consumption/budgets/"
+        f"budget-{sandbox_id}?api-version={BUDGET_API_VERSION}"
+    )
+    token = credential.get_token("https://management.azure.com/.default").token
+    result = httpx.delete(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    if result.status_code != 404:
+        result.raise_for_status()
+
+    log.append(f"Budget budget-{sandbox_id}: deleted or already absent")
+
+
+def run_decommission(reference: str) -> None:
+    """Deletes an approved sandbox outside Terraform so prevent_destroy stays enabled.
+
+    Steps: delete budget -> delete resource group -> remove its addresses from
+    Terraform state -> verify nothing remains -> drop it from the inventory.
+    """
+    request = SandboxRequestRepository.get_by_reference(reference)
+
+    if not request or request["status"] != "decommissioning":
+        return
+
+    sandbox_id = request["sandbox_id"]
+    group = resource_group_name(sandbox_id)
+    log: list[str] = [f"Decommissioning {reference} ({group})"]
+
+    try:
+        if settings.TERRAFORM_ENABLED:
+            with azure_credential() as credential, ResourceManagementClient(credential, subscription_id()) as client:
+                if client.resource_groups.check_existence(group):
+                    _delete_budget(group, sandbox_id, log, credential)
+                    client.resource_groups.begin_delete(group).result(timeout=settings.TERRAFORM_TIMEOUT_SECONDS)
+                    log.append(f"Resource group {group}: deleted")
+                else:
+                    log.append(f"Resource group {group}: already absent")
+
+                if client.resource_groups.check_existence(group):
+                    raise TerraformExecutionError(f"Resource group {group} still exists")
+
+                removed = TerraformService.remove_from_state(sandbox_id)
+                log.append(f"Removed from Terraform state: {removed or 'nothing to remove'}")
+                remaining = TerraformService.state_addresses_for(sandbox_id)
+                if remaining:
+                    raise TerraformExecutionError(f"Still in Terraform state: {remaining}")
+
+            log.append("Verified: no state entries and no resource group remain")
+
+    except Exception as exc:  # noqa: BLE001
+        exc.output = "\n".join(log) + "\n\n" + (getattr(exc, "output", "") or str(exc))
+        _record_failure(request, "decommission", exc)
+        return
+
+    SandboxRepository.delete(sandbox_id)
+
+    if settings.TERRAFORM_ENABLED:
+        TerraformService.generate_variables_file()
+
+    write_job_log(reference, "decommission", "\n".join(log))
+
+    for item in DecommissionRequestRepository.get_all(statuses=("approved",)):
+        if item.get("sandbox_reference") == reference:
+            DecommissionRequestRepository.update(item["request_id"], {"status": "completed"})
+
+    rejected = request.get("cleanup_outcome") == "rejected"
+    update_request(
+        request["request_id"],
+        {
+            "status": "rejected" if rejected else "decommissioned",
+            "failed_operation": None,
+            "last_error": None,
+            "cleanup_outcome": None,
+            **({} if rejected else {"decommissioned_at": history_entry("", "")["at"]}),
+        },
+        history_entry("Rejected", "Provisioning could not be completed. Created resources were cleaned up.")
+        if rejected else history_entry("Decommissioned", f"{group} and all its resources were deleted"),
+    )
+    AuditService.log_action(
+        "system", "failed_sandbox_rejected" if rejected else "sandbox_decommissioned", "sandbox", reference,
+    )
+    logger.info("Decommissioned %s", reference)

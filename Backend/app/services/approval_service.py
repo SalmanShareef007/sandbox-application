@@ -1,0 +1,368 @@
+
+from datetime import date, datetime, timedelta, timezone
+from uuid import uuid4
+
+from app.core.config import settings
+from app.core.security import user_email
+from app.repositories.extension_repository import (
+    DecommissionRequestRepository,
+    ExtensionRequestRepository,
+)
+from app.repositories.approval_repository import ApprovalRepository
+from app.repositories.sandbox_repository import SandboxRepository
+from app.services.audit_service import AuditService
+from app.services.sandbox_service import (
+    SandboxError,
+    extension_view,
+    get_request_or_404,
+    history_entry,
+    is_owner,
+    queue_decommission,
+    schedule_job,
+    today,
+    update_request,
+    view_by_reference,
+)
+from app.services.storage_service import JSONStorageService
+
+
+class ApprovalService:
+
+    @classmethod
+    def _record_decision(
+        cls,
+        request_type: str,
+        reference: str,
+        admin_claims: dict,
+        decision: str,
+        comments: str | None = None,
+    ) -> dict:
+        with JSONStorageService.lock():
+            approval = ApprovalRepository.record(request_type, reference, admin_claims, decision, comments)
+
+            AuditService.log_action(
+                admin_claims.get("oid"), f"{request_type}_{decision}", request_type, reference,
+                {"comments": comments} if comments else None,
+            )
+
+        return approval
+
+    @staticmethod
+    def _prevent_self_approval(request: dict, admin_claims: dict) -> None:
+        if is_owner(request, admin_claims):
+            raise SandboxError("You cannot approve your own request.", 403)
+
+    # --------------------------------------------------
+    # Sandbox requests
+    # --------------------------------------------------
+
+    @classmethod
+    @JSONStorageService.lock()
+    def approve_request(
+        cls,
+        reference: str,
+        admin_claims: dict,
+        budget: float | None = None,
+        comments: str | None = None,
+    ) -> dict:
+
+        admin = user_email(admin_claims)
+
+        with JSONStorageService.lock():
+            request = get_request_or_404(reference)
+
+            if request["status"] != "pending":
+                raise SandboxError("Only pending requests can be approved.", 409)
+
+            cls._prevent_self_approval(request, admin_claims)
+
+            amount = budget if budget is not None else request["monthly_budget"]
+            if amount <= 0:
+                raise SandboxError("Budget must be greater than zero.")
+            if amount > settings.MAX_SANDBOX_BUDGET:
+                raise SandboxError(f"Budget must not exceed {settings.MAX_SANDBOX_BUDGET:g} {settings.BUDGET_CURRENCY}.")
+
+            if SandboxRepository.get_by_id(request["sandbox_id"]):
+                raise SandboxError("Sandbox ID already exists.", 409)
+
+            expiry_date = (today() + timedelta(days=request["duration_days"])).isoformat()
+
+            SandboxRepository.create({
+                "sandbox_id": request["sandbox_id"],
+                "owner": request["owner"],
+                "manager_email": request.get("manager_email"),
+                "principal_id": request["principal_id"],
+                "business_unit": request["business_unit"],
+                "cost_center": request["cost_center"],
+                "monthly_budget": amount,
+                "budget_start_date": datetime.now(timezone.utc).strftime("%Y-%m-01T00:00:00Z"),
+                "expiry_date": expiry_date,
+                "role": request["role"],
+                "location": request["location"],
+                "status": "provisioning",
+                "request_reference": reference,
+            })
+
+            budget_note = f" with budget {amount:,.2f} {settings.BUDGET_CURRENCY}" if amount != request["monthly_budget"] else ""
+            update_request(
+                request["request_id"],
+                {
+                    "status": "provisioning",
+                    "operation_id": str(uuid4()),
+                    "monthly_budget": amount,
+                    "expiry_date": expiry_date,
+                    "decision_by": admin,
+                    "decision_reason": comments,
+                    "decided_at": datetime.now(timezone.utc).isoformat(),
+                },
+                history_entry("Approved", f"Approved by {admin}{budget_note}"),
+                history_entry("Provisioning", "Terraform apply started"),
+            )
+
+        cls._record_decision("sandbox_request", reference, admin_claims, "approved", comments)
+        schedule_job(reference, "provision")
+
+        return view_by_reference(reference)
+
+    @classmethod
+    @JSONStorageService.lock()
+    def reject_request(cls, reference: str, admin_claims: dict, reason: str) -> dict:
+        admin = user_email(admin_claims)
+        request = get_request_or_404(reference)
+
+        if request["status"] != "pending":
+            raise SandboxError("Only pending requests can be rejected.", 409)
+
+        cls._prevent_self_approval(request, admin_claims)
+
+        update_request(
+            request["request_id"],
+            {
+                "status": "rejected",
+                "decision_by": admin,
+                "decision_reason": reason,
+                "decided_at": datetime.now(timezone.utc).isoformat(),
+            },
+            history_entry("Rejected", f"Rejected by {admin}"),
+        )
+        cls._record_decision("sandbox_request", reference, admin_claims, "rejected", reason)
+
+        return view_by_reference(reference)
+
+    @classmethod
+    @JSONStorageService.lock()
+    def reject_failed(cls, reference: str, admin_claims: dict, reason: str) -> dict:
+        """Gives up on a sandbox whose provisioning failed: cleans up what was created, then marks it Rejected."""
+        admin = user_email(admin_claims)
+        request = get_request_or_404(reference)
+
+        if request["status"] != "failed" or (request.get("failed_operation") or "provision") != "provision":
+            raise SandboxError("Only sandboxes whose provisioning failed can be rejected.", 409)
+
+        cls._prevent_self_approval(request, admin_claims)
+
+        SandboxRepository.update(request["sandbox_id"], {"status": "decommissioning"})
+        update_request(
+            request["request_id"],
+            {
+                "status": "decommissioning",
+                "operation_id": str(uuid4()),
+                "failed_operation": None,
+                "last_error": None,
+                "cleanup_outcome": "rejected",
+                "decision_by": admin,
+                "decision_reason": reason,
+                "decided_at": datetime.now(timezone.utc).isoformat(),
+            },
+            history_entry("Decommissioning", f"Provisioning failed; rejected by {admin}. Cleaning up created resources."),
+        )
+        cls._record_decision("sandbox_request", reference, admin_claims, "rejected", reason)
+        schedule_job(reference, "decommission")
+
+        return view_by_reference(reference)
+
+    # --------------------------------------------------
+    # Extensions
+    # --------------------------------------------------
+
+    @classmethod
+    @JSONStorageService.lock()
+    def approve_extension(cls, reference: str, admin_claims: dict) -> dict:
+        admin = user_email(admin_claims)
+
+        with JSONStorageService.lock():
+            extension = ExtensionRequestRepository.get_by_reference(reference)
+
+            if not extension:
+                raise SandboxError(f"Extension {reference} was not found.", 404)
+
+            if extension["status"] != "pending":
+                raise SandboxError("Only pending extensions can be approved.", 409)
+
+            request = get_request_or_404(extension["sandbox_reference"])
+            cls._prevent_self_approval(request, admin_claims)
+
+            if request["status"] != "active" or request.get("operation_in_progress"):
+                raise SandboxError("The sandbox is not active, so it cannot be extended now.", 409)
+
+            new_expiry = (
+                datetime.fromisoformat(request["expiry_date"]).date()
+                + timedelta(days=extension["extra_days"])
+            ).isoformat()
+            if new_expiry <= today().isoformat() or extension["extra_days"] > settings.MAX_EXTENSION_DAYS:
+                raise SandboxError("The requested extension is outside the configured rules.", 409)
+            for cleanup in DecommissionRequestRepository.get_all(statuses=("pending", "approved")):
+                if cleanup.get("sandbox_reference") == request["reference"]:
+                    DecommissionRequestRepository.update(cleanup["request_id"], {"status": "cancelled", "decision_reason": "Superseded by approved extension."})
+
+            SandboxRepository.update(request["sandbox_id"], {"pending_expiry_date": new_expiry})
+            update_request(
+                request["request_id"],
+                {"pending_expiry_date": new_expiry, "operation_in_progress": "extension", "operation_id": str(uuid4())},
+                history_entry(
+                    "Extension approved",
+                    f"+{extension['extra_days']} days approved by {admin}, new expiry {new_expiry}",
+                ),
+            )
+            extension = ExtensionRequestRepository.update(
+                extension["request_id"],
+                {"status": "approved", "decision_by": admin, "new_expiry_date": new_expiry},
+            )
+
+        cls._record_decision("extension_request", reference, admin_claims, "approved")
+        schedule_job(extension["sandbox_reference"], "extension")
+
+        return extension_view(extension)
+
+    @classmethod
+    @JSONStorageService.lock()
+    def reject_extension(cls, reference: str, admin_claims: dict, reason: str) -> dict:
+        admin = user_email(admin_claims)
+        extension = ExtensionRequestRepository.get_by_reference(reference)
+
+        if not extension:
+            raise SandboxError(f"Extension {reference} was not found.", 404)
+
+        if extension["status"] != "pending":
+            raise SandboxError("Only pending extensions can be rejected.", 409)
+
+        request = get_request_or_404(extension["sandbox_reference"])
+        cls._prevent_self_approval(request, admin_claims)
+
+        extension = ExtensionRequestRepository.update(
+            extension["request_id"],
+            {"status": "rejected", "decision_by": admin, "decision_reason": reason},
+        )
+        update_request(
+            request["request_id"], {},
+            history_entry("Extension rejected", f"Rejected by {admin}: {reason}"),
+        )
+        cls._record_decision("extension_request", reference, admin_claims, "rejected", reason)
+
+        return extension_view(extension)
+
+    # --------------------------------------------------
+    # Decommission
+    # --------------------------------------------------
+
+    @classmethod
+    @JSONStorageService.lock()
+    def approve_decommission(cls, sandbox_reference: str, admin_claims: dict) -> dict:
+        admin = user_email(admin_claims)
+
+        with JSONStorageService.lock():
+            decommission = DecommissionRequestRepository.get_pending_for_sandbox(sandbox_reference)
+
+            if not decommission:
+                raise SandboxError("There is no pending decommission request for this sandbox.", 404)
+
+            request = get_request_or_404(sandbox_reference)
+            cls._prevent_self_approval(request, admin_claims)
+            requires_owner_consent = decommission.get("source") == "admin-consent"
+            if not requires_owner_consent and decommission.get("requested_by_user_id") == admin_claims.get("oid"):
+                raise SandboxError("You cannot approve a decommission request you submitted.", 403)
+            if requires_owner_consent and not decommission.get("owner_accepted"):
+                raise SandboxError("The sandbox owner must agree before decommission can be approved.", 409)
+
+            if request["status"] != "active" or request.get("operation_in_progress"):
+                raise SandboxError("The sandbox is busy or not active.", 409)
+            if ExtensionRequestRepository.get_pending_for_sandbox(sandbox_reference):
+                raise SandboxError("Decide the pending extension before approving decommission.", 409)
+
+            expiry = datetime.fromisoformat(request["expiry_date"]).date()
+            if decommission.get("source") == "expiry":
+                eligible = expiry + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+            else:
+                eligible = expiry + timedelta(days=settings.EXPIRY_GRACE_DAYS) if expiry < today() else today()
+            if decommission.get("source") == "expiry" and today() < eligible:
+                raise SandboxError(
+                    f"Expiry cleanup cannot be approved before the grace period ends on {eligible.isoformat()}.",
+                    409,
+                )
+            DecommissionRequestRepository.update(decommission["request_id"], {
+                "status": "approved", "decision_by": admin, "cleanup_not_before": eligible.isoformat(),
+                "flagged_expiry": request["expiry_date"],
+            })
+            update_request(request["request_id"], {}, history_entry("Cleanup flagged", f"Flagged by {admin}; eligible from {eligible.isoformat()}"))
+            if eligible <= today():
+                queue_decommission(request, admin)
+
+        cls._record_decision(
+            "decommission_request", decommission["reference"], admin_claims, "approved",
+        )
+        return view_by_reference(sandbox_reference)
+
+    @classmethod
+    @JSONStorageService.lock()
+    def flag_cleanup(cls, reference: str, reason: str, admin_claims: dict) -> dict:
+        request = get_request_or_404(reference)
+        cls._prevent_self_approval(request, admin_claims)
+        if request["status"] != "active" or request.get("operation_in_progress"):
+            raise SandboxError("Only idle, active sandboxes can be flagged for cleanup.", 409)
+        if not request.get("expiry_date"):
+            raise SandboxError("Cleanup can only be flagged after the sandbox expiry grace period.", 409)
+        eligible = date.fromisoformat(request["expiry_date"]) + timedelta(days=settings.EXPIRY_GRACE_DAYS)
+        if today() < eligible:
+            raise SandboxError(
+                f"Cleanup can only be flagged after the expiry grace period ends on {eligible.isoformat()}.",
+                409,
+            )
+        if ExtensionRequestRepository.get_pending_for_sandbox(reference):
+            raise SandboxError("Decide the pending extension before flagging cleanup.", 409)
+        open_requests = [item for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved")) if item.get("sandbox_reference") == reference]
+        if any(item["status"] == "approved" for item in open_requests):
+            raise SandboxError("Cleanup is already flagged for this sandbox.", 409)
+        if not open_requests:
+            DecommissionRequestRepository.create({
+                "sandbox_reference": reference, "sandbox_id": request["sandbox_id"],
+                "requested_by": "system", "requested_by_user_id": None,
+                "source": "admin-flag", "reason": reason,
+            })
+        return cls.approve_decommission(reference, admin_claims)
+
+    @classmethod
+    @JSONStorageService.lock()
+    def reject_decommission(cls, sandbox_reference: str, admin_claims: dict, reason: str) -> dict:
+        admin = user_email(admin_claims)
+        decommission = next((item for item in DecommissionRequestRepository.get_all(statuses=("pending", "approved")) if item.get("sandbox_reference") == sandbox_reference), None)
+
+        if not decommission:
+            raise SandboxError("There is no pending decommission request for this sandbox.", 404)
+
+        request = get_request_or_404(sandbox_reference)
+        if request["status"] != "active" or request.get("operation_in_progress"):
+            raise SandboxError("Cleanup has already started or the sandbox is busy.", 409)
+
+        DecommissionRequestRepository.update(
+            decommission["request_id"],
+            {"status": "rejected", "decision_by": admin, "decision_reason": reason},
+        )
+        update_request(
+            request["request_id"], {},
+            history_entry("Decommission rejected", f"Rejected by {admin}: {reason}"),
+        )
+        cls._record_decision(
+            "decommission_request", decommission["reference"], admin_claims, "rejected", reason,
+        )
+
+        return view_by_reference(sandbox_reference)

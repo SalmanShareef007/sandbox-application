@@ -1,0 +1,252 @@
+name: Build & Deploy to ACR and App Services
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_RESOURCE_GROUP: ${{ secrets.ACR_RESOURCE_GROUP }}
+  CONTAINER_APPS_ENVIRONMENT: ${{ secrets.CONTAINER_APPS_ENVIRONMENT }}
+  API_IMAGE_NAME: 'sandbox-api'
+  WORKER_IMAGE_NAME: 'sandbox-worker'
+  UI_IMAGE_NAME: 'sandbox-ui'
+
+jobs:
+  # ============================================================================
+  # JOB 1: BUILD STAGE - Build & Push Docker Images
+  # ============================================================================
+  build:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login (Service Principal)
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 🐳 Login to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      - name: 🏗️ Build Backend  API image
+        run: |
+          docker build \
+            -f Backend/Dockerfile \
+            --target api \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:${{ github.run_id }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest \
+            .
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: 🏗️ Build Backend Worker image
+        run: |
+          docker build \
+            -f Backend/Dockerfile \
+            --target worker \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:${{ github.run_id }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest \
+            .
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: 🏗️ Build Frontend UI image
+        run: |
+          docker build \
+            -f Frontend/Dockerfile \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:${{ github.run_id }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest \
+            --build-arg NEXT_PUBLIC_CLIENT_ID=${{ secrets.NEXT_PUBLIC_CLIENT_ID }} \
+            --build-arg NEXT_PUBLIC_TENANT_ID=${{ secrets.NEXT_PUBLIC_TENANT_ID }} \
+            --build-arg NEXT_PUBLIC_REDIRECT_URI=${{ secrets.NEXT_PUBLIC_REDIRECT_URI }} \
+            --build-arg NEXT_PUBLIC_API_SCOPE=${{ secrets.NEXT_PUBLIC_API_SCOPE }} \
+            --build-arg NEXT_PUBLIC_API_BASE_URL=${{ secrets.NEXT_PUBLIC_API_BASE_URL }} \
+            Frontend
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: 📤 Push images to ACR
+        run: |
+          echo "🚀 Pushing API image..."
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:${{ github.run_id }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest
+          
+          echo "🚀 Pushing Worker image..."
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:${{ github.run_id }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest
+          
+          echo "🚀 Pushing UI image..."
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:${{ github.run_id }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest
+          
+          echo "✅ All images pushed successfully!"
+
+  # ============================================================================
+  # JOB 2: DEPLOY STAGE - Deploy to App Services & Container Apps
+  # ============================================================================
+  deploy:
+    name: Deploy to App Services & Container Apps
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login (Service Principal)
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 🌐 Deploy API to App Service
+        run: |
+          echo "🚀 Deploying API image to: ${{ secrets.API_APP_SERVICE_NAME }}"
+          
+          az webapp config container set \
+            --name ${{ secrets.API_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest \
+            --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io \
+            --docker-registry-server-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
+            --docker-registry-server-password $(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          
+          echo "✅ API deployment configuration updated"
+
+      - name: 🌐 Deploy UI to App Service
+        run: |
+          echo "🚀 Deploying UI image to: ${{ secrets.UI_APP_SERVICE_NAME }}"
+          
+          az webapp config container set \
+            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest \
+            --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io \
+            --docker-registry-server-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
+            --docker-registry-server-password $(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          
+          echo "✅ UI deployment configuration updated"
+
+      - name: 🐳 Deploy Worker to Container Apps
+        run: |
+          echo "🚀 Deploying Worker image to Container Apps"
+          
+          az containerapp update \
+            --name ${{ secrets.WORKER_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest
+          
+          echo "✅ Worker deployment updated in Container Apps"
+
+      - name: 🔄 Restart App Services
+        run: |
+          echo "🔄 Restarting App Services..."
+          
+          az webapp restart \
+            --name ${{ secrets.API_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }}
+          
+          az webapp restart \
+            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }}
+          
+          echo "✅ App Services restarted"
+
+      - name: 🔄 Restart Container Apps
+        run: |
+          echo "🔄 Restarting Worker Container App..."
+          
+          az containerapp revision activate \
+            --name ${{ secrets.WORKER_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} || true
+          
+          echo "✅ Container App restarted"
+
+      - name: ⏳ Wait for services to warm up
+        run: |
+          echo "⏳ Waiting 30 seconds for warm-up..."
+          sleep 30
+          echo "✅ Services should be ready"
+
+      - name: 🏥 Health Check - API
+        run: |
+          API_FQDN=$(az webapp show \
+            --name ${{ secrets.API_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --query defaultHostName -o tsv)
+          
+          API_URL="https://${API_FQDN}/api/v1/health"
+          echo "🔍 Checking API health at: $API_URL"
+          
+          for i in {1..30}; do
+            if curl -f -s -o /dev/null "$API_URL"; then
+              echo "✅ API is healthy (attempt $i/30)"
+              exit 0
+            fi
+            echo "⏳ Attempt $i/30: Waiting for API..."
+            sleep 10
+          done
+          
+          echo "❌ API health check failed after 30 attempts"
+          exit 1
+
+      - name: 🏥 Health Check - UI
+        run: |
+          UI_FQDN=$(az webapp show \
+            --name ${{ secrets.UI_APP_SERVICE_NAME }} \
+            --resource-group ${{ env.ACR_RESOURCE_GROUP }} \
+            --query defaultHostName -o tsv)
+          
+          UI_URL="https://${UI_FQDN}"
+          echo "🔍 Checking UI health at: $UI_URL"
+          
+          for i in {1..30}; do
+            if curl -f -s -o /dev/null "$UI_URL"; then
+              echo "✅ UI is healthy (attempt $i/30)"
+              exit 0
+            fi
+            echo "⏳ Attempt $i/30: Waiting for UI..."
+            sleep 10
+          done
+          
+          echo "❌ UI health check failed after 30 attempts"
+          exit 1
+
+      - name: 📊 Deployment Summary
+        run: |
+          echo "======================================"
+          echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY!"
+          echo "======================================"
+          echo ""
+          echo "📦 Images Built & Pushed:"
+          echo "   - API:    ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest"
+          echo "   - Worker: ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest"
+          echo "   - UI:     ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest"
+          echo ""
+          echo "🌐 Deployed to App Services:"
+          echo "   - API App Service: ${{ secrets.API_APP_SERVICE_NAME }}"
+          echo "   - UI App Service:  ${{ secrets.UI_APP_SERVICE_NAME }}"
+          echo ""
+          echo "🐳 Deployed to Container Apps:"
+          echo "   - Worker: ${{ secrets.WORKER_CONTAINER_APP_NAME }}"
+          echo ""
+          echo "✅ Health checks passed!"
+          echo "======================================"
+
+      - name: 🚨 Deployment Failure Notification
+        if: failure()
+        run: |
+          echo "❌ DEPLOYMENT FAILED!"
+          echo "Check the logs above for details."
+          exit 1
