@@ -6,6 +6,28 @@ import { MsalProvider } from "@azure/msal-react";
 import {msalConfig} from "@/config/authConfig";
 import RoleProvider from "@/components/providers/RoleProvider";
 
+// One shared instance: React dev mode runs effects twice, and a second handleRedirectPromise() call
+// finds the redirect state already consumed and fails with no_token_request_cache_error.
+let msalReady: Promise<PublicClientApplication> | null = null;
+
+function getMsal(): Promise<PublicClientApplication> {
+  msalReady ??= (async () => {
+    const pca = new PublicClientApplication(msalConfig);
+    await pca.initialize();
+
+    // Completes the login after Microsoft redirects back to your app
+    const result = await pca.handleRedirectPromise();
+    if (result?.account) {
+      pca.setActiveAccount(result.account);
+    } else {
+      const accounts = pca.getAllAccounts();
+      if (accounts.length > 0) pca.setActiveAccount(accounts[0]);
+    }
+    return pca;
+  })();
+  return msalReady;
+}
+
 export default function MsalProviderWrapper({
   children,
 }: {
@@ -15,23 +37,10 @@ export default function MsalProviderWrapper({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const init = async () => {
-      const pca = new PublicClientApplication(msalConfig);
-      await pca.initialize();
-
-      // Completes the login after Microsoft redirects back to your app
-      const result = await pca.handleRedirectPromise();
-      if (result?.account) {
-        pca.setActiveAccount(result.account);
-      } else {
-        const accounts = pca.getAllAccounts();
-        if (accounts.length > 0) pca.setActiveAccount(accounts[0]);
-      }
-
-      setInstance(pca);
-    };
-
-    void init().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Authentication could not start."));
+    getMsal().then(setInstance).catch((cause: unknown) => {
+      msalReady = null;
+      setError(cause instanceof Error ? cause.message : "Authentication could not start.");
+    });
   }, []);
 
   if (error) return <div role="alert" className="p-8 text-sm">Authentication unavailable: {error}</div>;

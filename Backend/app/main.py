@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
  
 from app.api.router import api_router
 from app.core.config import settings, validate_hosting_configuration
-from app.db.database import check_database, initialize_database, is_production
+from app.db.database import check_database, ensure_database, is_production
 from app.db.errors import DataError
 from app.services.sandbox_service import SandboxError
  
@@ -18,8 +18,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_hosting_configuration()
-    if not is_production():
-        initialize_database()
+    ensure_database()
     check_database()
     if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
         from azure.monitor.opentelemetry import configure_azure_monitor

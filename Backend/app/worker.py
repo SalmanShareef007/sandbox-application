@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from app.core.config import settings, validate_hosting_configuration
-from app.db.database import check_database, initialize_database, is_production
+from app.db.database import check_database, ensure_database, is_production
 from app.integrations.terraform import service_principal_configured
 from app.services import budget_service, expiry_service, notification_service
 from app.services.job_service import run_next_job, worker_lock
@@ -43,8 +43,7 @@ def main() -> None:
     validate_hosting_configuration()
     if is_production() and not (settings.ARM_USE_MSI or service_principal_configured()):
         raise RuntimeError("The production worker requires managed identity or a service principal.")
-    if not is_production():
-        initialize_database()
+    ensure_database()
     check_database()
     if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
         from azure.monitor.opentelemetry import configure_azure_monitor

@@ -33,6 +33,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={montserrat.variable} suppressHydrationWarning>
       <head>
+        {/* Must be a blocking script so the config exists before the app code runs. */}
+        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
+        <script src="/config.js" />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>

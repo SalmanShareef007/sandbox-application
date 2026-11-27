@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.engine import Connection, Engine, make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.core.config import settings
 from app.db.errors import DataUnavailableError
@@ -18,7 +18,6 @@ logger = logging.getLogger("app.db")
 
 # Serialises write transactions across API and worker processes; reads never take it.
 WRITE_LOCK_KEY = 81924670
-UPGRADE_SQL = Path(__file__).with_name("schema_upgrade.sql")
 current_connection: ContextVar[Connection | None] = ContextVar("database_connection", default=None)
 # Caches of database-assigned IDs register here so a rolled-back transaction cannot leave phantom entries.
 rollback_hooks: list = []
@@ -73,11 +72,6 @@ def get_engine() -> Engine:
 	)
 
 
-def _statements(sql: str) -> list[str]:
-	body = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
-	return [statement.strip() for statement in body.split(";") if statement.strip()]
-
-
 def _upgrade_sqlite_notification_reads(conn: Connection) -> None:
 	columns = {column["name"] for column in inspect(conn).get_columns("notifications")}
 	for name in ("owner_read_at", "admin_read_at"):
@@ -86,20 +80,18 @@ def _upgrade_sqlite_notification_reads(conn: Connection) -> None:
 
 
 def initialize_database() -> None:
-	"""Creates missing tables, then (PostgreSQL only) applies the idempotent upgrade script and seeds."""
+	"""Creates missing tables from the table definitions, then seeds reference data."""
 	engine = get_engine()
 	try:
 		metadata.create_all(engine)
 		with engine.begin() as conn:
 			if engine.dialect.name == "postgresql":
 				conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": WRITE_LOCK_KEY})
-				for statement in _statements(UPGRADE_SQL.read_text(encoding="utf-8")):
-					conn.exec_driver_sql(statement)
 			else:
 				_upgrade_sqlite_notification_reads(conn)
-				for name, description in ROLE_SEEDS:
-					if conn.execute(select(roles.c.id).where(roles.c.name == name)).first() is None:
-						conn.execute(roles.insert().values(name=name, description=description))
+			for name, description in ROLE_SEEDS:
+				if conn.execute(select(roles.c.id).where(roles.c.name == name)).first() is None:
+					conn.execute(roles.insert().values(name=name, description=description))
 			if conn.execute(select(mutex.c.id).where(mutex.c.id == 1)).first() is None:
 				conn.execute(mutex.insert().values(id=1))
 			for prefix, start in COUNTER_SEEDS.items():
@@ -163,6 +155,20 @@ def connection():
 		conn.rollback()
 
 
+def ensure_database() -> None:
+	"""Creates the tables on the first start only; later starts just verify them."""
+	try:
+		with get_engine().connect() as conn:
+			conn.execute(text("SELECT 1 FROM sandbox_requests LIMIT 1"))
+		return
+	except ProgrammingError:
+		pass
+	except OperationalError as exc:
+		logger.error("Database connection failed: %s", _first_line(exc))
+		raise DataUnavailableError() from exc
+	initialize_database()
+
+
 def check_database() -> None:
 	with connection() as conn:
 		conn.execute(text("SELECT 1 FROM sandbox_requests LIMIT 1"))
@@ -171,15 +177,10 @@ def check_database() -> None:
 
 def main() -> None:
 	parser = argparse.ArgumentParser()
-	parser.add_argument("command", choices=["init", "import-json"])
-	parser.add_argument("--directory", type=Path, default=Path(settings.RUNTIME_DIRECTORY))
-	arguments = parser.parse_args()
+	parser.add_argument("command", choices=["init"])
+	parser.parse_args()
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 	initialize_database()
-	if arguments.command == "import-json":
-		from app.db.importer import import_json
-
-		print(f"Imported {import_json(arguments.directory)} records.")
 
 
 if __name__ == "__main__":

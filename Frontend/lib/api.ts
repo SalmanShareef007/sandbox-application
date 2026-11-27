@@ -1,4 +1,6 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { runtimeConfig } from "@/lib/runtimeConfig";
+
+export const API_BASE_URL = runtimeConfig().apiBaseUrl;
 
 export class ApiError extends Error {
   constructor(

@@ -4,6 +4,7 @@
 # State and crash logs
 *.tfstate
 *.tfstate.*
+*.tfplan
 crash.log
 crash.*.log
 

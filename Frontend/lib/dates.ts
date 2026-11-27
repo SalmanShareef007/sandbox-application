@@ -13,9 +13,6 @@ export function parseDemoDate(value: string): Date {
 export const formatDemoDate = (d: Date) =>
   `${pad(d.getDate())} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 
-export const toIsoDate = (d: Date) =>
-  `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
 export const addDays = (d: Date, days: number) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
 

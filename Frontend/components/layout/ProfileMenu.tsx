@@ -7,7 +7,9 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import Skeleton from "@/components/ui/Skeleton";
 import { useRole } from "@/hooks/useRole";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { runtimeConfig } from "@/lib/runtimeConfig";
+
+const API_BASE_URL = runtimeConfig().apiBaseUrl;
 
 interface AuthMe {
   authenticated: boolean;

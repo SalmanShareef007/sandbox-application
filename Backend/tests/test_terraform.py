@@ -122,3 +122,29 @@ def test_targeted_plan_includes_shared_policy_migration_without_changing_cleanup
     targets = TerraformService.plan_targets("eng-new-001")
     assert "azurerm_policy_definition.mandatory_tags" in targets
     assert "azurerm_policy_definition.mandatory_tags" not in TerraformService.module_addresses("eng-new-001")
+
+
+def test_managed_identity_drives_terraform_env(monkeypatch):
+    from app.integrations import terraform as integration
+
+    monkeypatch.setattr(settings, "ARM_USE_MSI", True)
+    monkeypatch.setattr(settings, "ARM_CLIENT_ID", "worker-client-id")
+    monkeypatch.setattr(settings, "ARM_CLIENT_SECRET", None)
+    monkeypatch.setattr("app.services.subscription_service.subscription_id", lambda: "sub-1")
+    env = integration._terraform_env()
+    assert env["ARM_USE_MSI"] == "true" and env["ARM_CLIENT_ID"] == "worker-client-id"
+    assert "ARM_CLIENT_SECRET" not in env or not env["ARM_CLIENT_SECRET"]
+
+
+def test_service_principal_takes_precedence_over_managed_identity(monkeypatch):
+    from pydantic import SecretStr
+
+    from app.integrations import terraform as integration
+
+    monkeypatch.setattr(settings, "ARM_USE_MSI", True)
+    monkeypatch.setattr(settings, "ARM_CLIENT_ID", "sp-client-id")
+    monkeypatch.setattr(settings, "ARM_CLIENT_SECRET", SecretStr("secret"))
+    monkeypatch.setattr(settings, "ARM_TENANT_ID", "tenant")
+    monkeypatch.setattr("app.services.subscription_service.subscription_id", lambda: "sub-1")
+    env = integration._terraform_env()
+    assert env["ARM_CLIENT_SECRET"] == "secret" and "ARM_USE_MSI" not in env

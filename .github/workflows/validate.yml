@@ -2,15 +2,18 @@ name: Build & Push Images to ACR
 
 on:
   workflow_dispatch:
+    inputs:
+      customer:
+        description: 'Customer to release to (for example xencia or harris). Images go to <customer>/sandbox-*'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   ACR_NAME: ${{ secrets.ACR_NAME }}
-  API_IMAGE_NAME: 'sandbox-api'
-  WORKER_IMAGE_NAME: 'sandbox-worker'
-  UI_IMAGE_NAME: 'sandbox-ui'
+  CUSTOMER: ${{ inputs.customer }}
 
 jobs:
   build:
@@ -20,10 +23,20 @@ jobs:
       contents: read
 
     steps:
-      - name: 📥 Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐳 Login to ACR
+      - name: Prepare image names
+        run: |
+          customer="$(echo "$CUSTOMER" | tr '[:upper:]' '[:lower:]')"
+          if ! echo "$customer" | grep -Eq '^[a-z0-9][a-z0-9-]{0,40}$'; then
+            echo "Customer must be lowercase letters, digits or hyphens." >&2
+            exit 1
+          fi
+          registry="${ACR_NAME}.azurecr.io/${customer}"
+          echo "REGISTRY=$registry" >> "$GITHUB_ENV"
+
+      - name: Login to ACR
         env:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
@@ -31,55 +44,35 @@ jobs:
           printf '%s' "$ACR_PASSWORD" | docker login "$ACR_NAME.azurecr.io" \
             --username "$ACR_USERNAME" --password-stdin
 
-      - name: 🏗️ Build Backend  API image
-        run: |
-          docker build \
-            -f Backend/Dockerfile \
-            --target api \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:${{ github.run_id }} \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest \
-            .
+      - name: Build Backend API image
         env:
           DOCKER_BUILDKIT: 1
-
-      - name: 🏗️ Build Backend Worker image
         run: |
-          docker build \
-            -f Backend/Dockerfile \
-            --target worker \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:${{ github.run_id }} \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest \
-            .
+          docker build -f Backend/Dockerfile --target api \
+            -t "$REGISTRY/sandbox-api:${{ github.run_id }}" \
+            -t "$REGISTRY/sandbox-api:latest" .
+
+      - name: Build Backend Worker image
         env:
           DOCKER_BUILDKIT: 1
-
-      - name: 🏗️ Build Frontend UI image
         run: |
-          docker build \
-            -f Frontend/Dockerfile \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:${{ github.run_id }} \
-            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest \
-            --build-arg NEXT_PUBLIC_CLIENT_ID=${{ secrets.NEXT_PUBLIC_CLIENT_ID }} \
-            --build-arg NEXT_PUBLIC_TENANT_ID=${{ secrets.NEXT_PUBLIC_TENANT_ID }} \
-            --build-arg NEXT_PUBLIC_REDIRECT_URI=${{ secrets.NEXT_PUBLIC_REDIRECT_URI }} \
-            --build-arg NEXT_PUBLIC_API_SCOPE=${{ secrets.NEXT_PUBLIC_API_SCOPE }} \
-            --build-arg NEXT_PUBLIC_API_BASE_URL=${{ secrets.NEXT_PUBLIC_API_BASE_URL }} \
+          docker build -f Backend/Dockerfile --target worker \
+            -t "$REGISTRY/sandbox-worker:${{ github.run_id }}" \
+            -t "$REGISTRY/sandbox-worker:latest" .
+
+      # The UI image is generic: sign-in values are read from the App Service environment at startup.
+      - name: Build Frontend UI image
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          docker build -f Frontend/Dockerfile \
+            -t "$REGISTRY/sandbox-ui:${{ github.run_id }}" \
+            -t "$REGISTRY/sandbox-ui:latest" \
             Frontend
-        env:
-          DOCKER_BUILDKIT: 1
 
-      - name: 📤 Push images to ACR
+      - name: Push images to ACR
         run: |
-          echo "🚀 Pushing API image..."
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:${{ github.run_id }}
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.API_IMAGE_NAME }}:latest
-          
-          echo "🚀 Pushing Worker image..."
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:${{ github.run_id }}
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.WORKER_IMAGE_NAME }}:latest
-          
-          echo "🚀 Pushing UI image..."
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:${{ github.run_id }}
-          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.UI_IMAGE_NAME }}:latest
-          
-          echo "✅ All images pushed successfully!"
+          for image in sandbox-api sandbox-worker sandbox-ui; do
+            docker push "$REGISTRY/$image:${{ github.run_id }}"
+            docker push "$REGISTRY/$image:latest"
+          done

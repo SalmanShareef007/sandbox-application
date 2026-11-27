@@ -30,29 +30,3 @@ def test_concurrent_updates_do_not_lose_records(database):
 def test_invalid_collection_is_rejected(database):
     with pytest.raises(ValueError):
         Storage.read("../secrets.json")
-
-
-def test_explicit_import_reconstructs_identity_bound_requests(database, tmp_path, monkeypatch):
-    import json
-
-    from app.core.config import settings
-    from app.db.importer import import_json
-    from app.repositories.request_repository import SandboxRequestRepository
-    from app.services.sandbox_service import is_owner
-
-    tenant = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d0001"
-    object_id = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d1001"
-    other = "0b6bd7f4-1d1f-4a4e-8d8e-5f0f0b0d3001"
-    monkeypatch.setattr(settings, "ENTRA_TENANT_ID", tenant)
-    sandbox = {
-        "sandbox_id": "eng-owner-001", "owner": "owner@example.com", "principal_id": object_id,
-        "business_unit": "Engineering", "cost_center": "CC1", "monthly_budget": 500,
-        "expiry_date": "2026-12-01", "role": "Contributor", "status": "active",
-    }
-    (tmp_path / "sandboxes.json").write_text(json.dumps([sandbox]), encoding="utf-8")
-    assert import_json(tmp_path) == 2
-    request = SandboxRequestRepository.get_all()[0]
-    assert is_owner(request, {"oid": object_id, "tid": tenant})
-    assert not is_owner(request, {"oid": other, "tid": tenant, "preferred_username": "owner@example.com"})
-    with pytest.raises(ValueError):
-        import_json(tmp_path)

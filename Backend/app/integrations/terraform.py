@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import threading
 from pathlib import Path
 from azure.identity import ClientSecretCredential, DefaultAzureCredential, ManagedIdentityCredential
  
@@ -14,10 +13,6 @@ class TerraformExecutionError(Exception):
     def __init__(self, message: str, output: str = "") -> None:
         super().__init__(message)
         self.output = output
- 
- 
-_az_login_lock = threading.Lock()
-_az_logged_in = False
  
  
 def service_principal_configured() -> bool:
@@ -58,16 +53,6 @@ def _terraform_env() -> dict[str, str]:
         env["ARM_USE_CLI"] = "false"
         if settings.ARM_CLIENT_ID:
             env["ARM_CLIENT_ID"] = settings.ARM_CLIENT_ID
- 
-    return env
- 
- 
-def _az_env() -> dict[str, str]:
-    env = os.environ.copy()
- 
-    # A private az profile, so the user's own `az login` is never changed.
-    if service_principal_configured():
-        env["AZURE_CONFIG_DIR"] = settings.AZURE_SP_CONFIG_DIRECTORY or str(Path(settings.RUNTIME_DIRECTORY) / ".azure")
  
     return env
  
@@ -163,61 +148,3 @@ def run_terraform_command(
     )
  
     return result.stdout
- 
- 
-def _ensure_az_service_principal_login() -> None:
-    global _az_logged_in
- 
-    if not service_principal_configured() or _az_logged_in:
-        return
- 
-    with _az_login_lock:
-        if _az_logged_in:
-            return
- 
-        Path(_az_env()["AZURE_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)
-        login = [
-            "login", "--service-principal",
-            "--username", settings.ARM_CLIENT_ID,
-            "--password", settings.ARM_CLIENT_SECRET.get_secret_value(),
-            "--tenant", settings.ARM_TENANT_ID,
-            "--only-show-errors", "--output", "none",
-        ]
- 
-        try:
-            run_command(
-                settings.AZ_CLI_BINARY, login, timeout=120, env=_az_env(),
-                display=["login --service-principal"],
-            )
-        except TerraformExecutionError as exc:
-            # Never surface the command line, it contains the secret.
-            raise TerraformExecutionError(
-                "Service principal login failed. Check ARM_CLIENT_ID, "
-                "ARM_CLIENT_SECRET and ARM_TENANT_ID in Backend/.env.",
-                output=exc.output,
-            ) from None
- 
-        _az_logged_in = True
- 
- 
-def run_az_command(
-    command: list[str],
-    timeout: int = 900,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
- 
-    _ensure_az_service_principal_login()
- 
-    return run_command(
-        settings.AZ_CLI_BINARY,
-        [*command, "--only-show-errors"],
-        timeout=timeout,
-        check=check,
-        env=_az_env(),
-    )
- 
- 
-def terraform_plan() -> str:
-    return run_terraform_command(
-        ["plan", "-input=false", "-no-color"]
-    )

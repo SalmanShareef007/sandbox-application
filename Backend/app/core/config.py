@@ -80,7 +80,6 @@ class Settings(BaseSettings):
         BACKEND_DIR.parent / "Terraform" / "environments" / "dev"
     )
     TERRAFORM_BINARY: str = "terraform"
-    AZ_CLI_BINARY: str = "az"
     TERRAFORM_TIMEOUT_SECONDS: int = 1800
     AZURE_SUBSCRIPTION_ID: str = ""
     TERRAFORM_STATE_RESOURCE_GROUP: str | None = None
@@ -95,7 +94,6 @@ class Settings(BaseSettings):
     ARM_CLIENT_SECRET: SecretStr | None = None
     ARM_TENANT_ID: str | None = None
     ARM_USE_MSI: bool = False
-    AZURE_SP_CONFIG_DIRECTORY: str | None = None
 
     @field_validator("BUDGET_ALERT_THRESHOLDS")
     @classmethod
@@ -126,8 +124,15 @@ def validate_hosting_configuration() -> None:
 
     if not is_production():
         return
-    if not settings.ENTRA_TENANT_ID or not settings.ENTRA_API_AUDIENCE or not settings.AZURE_SUBSCRIPTION_ID:
-        raise RuntimeError("Production requires Entra tenant, API audience, and subscription settings.")
+    missing = [
+        name for name, value in (
+            ("ENTRA_TENANT_ID", settings.ENTRA_TENANT_ID),
+            ("ENTRA_API_AUDIENCE", settings.ENTRA_API_AUDIENCE),
+            ("AZURE_SUBSCRIPTION_ID", settings.AZURE_SUBSCRIPTION_ID),
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Production requires these settings: {', '.join(missing)}.")
     if not settings.ENTRA_ALLOWED_CLIENT_IDS:
         raise RuntimeError("Set ENTRA_ALLOWED_CLIENT_IDS to the trusted SPA application IDs.")
     if not settings.CORS_ORIGINS or any(not origin.startswith("https://") for origin in settings.CORS_ORIGINS):

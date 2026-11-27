@@ -83,37 +83,7 @@ is temporary SQLite. To run against a dedicated integration-test database, set
 records will be cleared between tests. Never use application or production databases
 for this setting. CI runs both database variants and builds the Linux containers.
 
-## Legacy JSON Migration
-
-1. Stop the old API and all provisioning processes. Back up `data`, the application database,
-	and the Azure Storage Terraform state before changing anything.
-2. Set `DATABASE_URL` to the new database and `ENTRA_TENANT_ID` to the tenant that
-	owns the imported users. Initialize the schema once using the command above.
-3. Review the JSON records, removing demo entries. Verify every `principal_id` and
-	user/tenant binding. Imported ownership uses object IDs, never email matching.
-4. Record each existing Azure budget's actual start timestamp as
-	`budget_start_date` in its inventory record. If all existing budgets share one
-	date, `LEGACY_BUDGET_START_DATE` can provide that explicit fallback. The worker
-	refuses to invent or change legacy dates. New approvals persist their own date.
-5. From Backend, run the explicit import:
-
-```powershell
-python -m app.db.database import-json --directory data
-```
-
-The import is transactional and refuses to overwrite a populated collection. It
-does not contact Azure. Legacy inventory without corresponding request records is
-converted into object-ID-bound imported requests as part of this explicit command,
-not as an automatic startup action.
-
-6. Confirm the configured remote-state resource group, account, container and key
-	point to the existing state. The partial backend configuration does not copy or
-	migrate state automatically. Never point a fresh inventory at unrelated state.
-7. Review legacy role assignments. New requests can use the enabled built-in
-	`Contributor` or `Owner` roles. Owner can grant access within the resource group;
-	existing assignments are not silently changed.
-8. Test a non-production request, extension, retry and deletion before reopening
-	production. Preserve the old JSON backup until reconciliation is complete.
+## Resource Inventory And Costs
 
 On the sandbox detail page, **View resources** opens an inventory table with CSV
 export. Inventory is fetched separately from costs when the table opens. Region

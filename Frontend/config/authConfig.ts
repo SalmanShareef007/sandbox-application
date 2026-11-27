@@ -1,11 +1,14 @@
 import { Configuration } from "@azure/msal-browser";
+import { runtimeConfig } from "@/lib/runtimeConfig";
+
+const config = runtimeConfig();
 
 export const msalConfig: Configuration = {
   auth: {
-    clientId: process.env.NEXT_PUBLIC_CLIENT_ID!,
-    authority: `https://login.microsoftonline.com/${process.env.NEXT_PUBLIC_TENANT_ID}`,
-    redirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI,
-    postLogoutRedirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI,
+    clientId: config.clientId,
+    authority: `https://login.microsoftonline.com/${config.tenantId}`,
+    redirectUri: config.redirectUri || undefined,
+    postLogoutRedirectUri: config.redirectUri || undefined,
   },
   cache: { cacheLocation: "sessionStorage" },
 };
@@ -15,7 +18,7 @@ export const loginRequest = {
 };
 
 export const apiRequest = {
-  scopes: [process.env.NEXT_PUBLIC_API_SCOPE!],
+  scopes: [config.apiScope],
 };
 
 export const graphRequest = {

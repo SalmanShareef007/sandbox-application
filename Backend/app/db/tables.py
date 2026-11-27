@@ -1,8 +1,8 @@
 import uuid
 
 from sqlalchemy import (
-    JSON, BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Index, Integer, MetaData, Numeric, String, Table, Text,
-    Uuid, func,
+    JSON, BigInteger, Boolean, CheckConstraint, Column, Date, DateTime, ForeignKey, Index, Integer, MetaData, Numeric,
+    String, Table, Text, Uuid, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -104,6 +104,10 @@ sandbox_requests = Table(
     Index("idx_sandbox_requests_sandbox_name", "sandbox_name"),
     Index("idx_sandbox_requests_created", "created_at"),
     Index("idx_sandbox_requests_updated", "updated_at"),
+    CheckConstraint(
+        "status IN ('pending', 'approved', 'rejected', 'provisioning', 'active', 'failed', 'decommissioning', 'decommissioned')",
+        name="chk_sandbox_request_status",
+    ),
 )
 
 request_history = Table(
@@ -156,6 +160,9 @@ extension_requests = Table(
     Index("uq_extension_requests_reference", "reference", unique=True),
     Index("idx_extension_requests_sandbox", "sandbox_id"),
     Index("idx_extension_requests_status", "status"),
+    CheckConstraint(
+        "status IN ('pending', 'approved', 'rejected', 'completed', 'cancelled', 'failed')", name="chk_extension_status",
+    ),
 )
 
 decommission_requests = Table(
@@ -177,6 +184,10 @@ decommission_requests = Table(
     Index("uq_decommission_requests_reference", "reference", unique=True),
     Index("idx_decommission_sandbox", "sandbox_id"),
     Index("idx_decommission_status", "status"),
+    CheckConstraint(
+        "status IN ('pending', 'approved', 'rejected', 'decommissioning', 'completed', 'failed', 'cancelled')",
+        name="chk_decommission_status",
+    ),
 )
 
 approvals = Table(
@@ -193,6 +204,11 @@ approvals = Table(
     Index("idx_approvals_sandbox_request", "sandbox_request_id"),
     Index("idx_approvals_extension_request", "extension_request_id"),
     Index("idx_approvals_decommission_request", "decommission_request_id"),
+    CheckConstraint("decision IN ('approved', 'rejected', 'pending')", name="chk_approval_decision"),
+    CheckConstraint(
+        "(sandbox_request_id IS NOT NULL) + (extension_request_id IS NOT NULL) + (decommission_request_id IS NOT NULL) = 1",
+        name="chk_approval_request_reference",
+    ),
 )
 
 terraform_jobs = Table(
@@ -212,6 +228,14 @@ terraform_jobs = Table(
     _created(), _updated(),
     Index("idx_terraform_jobs_sandbox", "sandbox_id"),
     Index("idx_terraform_jobs_status", "status"),
+    Index(
+        "idx_terraform_jobs_queue", "created_at",
+        postgresql_where=text("status IN ('queued', 'running')"), sqlite_where=text("status IN ('queued', 'running')"),
+    ),
+    CheckConstraint(
+        "status IN ('pending', 'queued', 'running', 'success', 'completed', 'failed', 'cancelled', 'superseded')",
+        name="chk_terraform_job_status",
+    ),
 )
 
 terraform_logs = Table(
